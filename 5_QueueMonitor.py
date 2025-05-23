@@ -392,9 +392,15 @@ class JVMThread(QThread):
                         while topic_iterator.hasNext():
                             topic = topic_iterator.next()
                             topic_name = str(topic)
-                            if topic_name not in topics and not topic_name.startswith("ActiveMQ.Advisory"):
-                                topics.append(topic_name)
-                                self.log_signal.emit(f"Found topic: {topic_name}")
+                            
+                            # Clean up topic name - remove any existing "topic://" prefixes
+                            clean_topic_name = topic_name
+                            while clean_topic_name.startswith("topic://"):
+                                clean_topic_name = clean_topic_name[8:]  # Remove "topic://" prefix
+                                
+                            if clean_topic_name not in topics and not clean_topic_name.startswith("ActiveMQ.Advisory"):
+                                topics.append(clean_topic_name)
+                                self.log_signal.emit(f"Found topic: {clean_topic_name}")
                     
                     # Log the total found
                     if queues or topics:
@@ -434,9 +440,16 @@ class JVMThread(QThread):
                             try:
                                 if hasattr(msg, "getStringProperty"):
                                     topic_name = msg.getStringProperty("destinationName")
-                                    if topic_name and topic_name not in topics and not topic_name.startswith("ActiveMQ.Advisory"):
-                                        topics.append(topic_name)
-                                        self.log_signal.emit(f"Discovered topic: {topic_name}")
+                                    
+                                    # Clean up topic name
+                                    if topic_name:
+                                        clean_topic_name = topic_name
+                                        while clean_topic_name.startswith("topic://"):
+                                            clean_topic_name = clean_topic_name[8:]  # Remove "topic://" prefix
+                                        
+                                        if clean_topic_name not in topics and not clean_topic_name.startswith("ActiveMQ.Advisory"):
+                                            topics.append(clean_topic_name)
+                                            self.log_signal.emit(f"Discovered topic: {clean_topic_name}")
                             except:
                                 pass
                     
@@ -590,8 +603,13 @@ class JVMThread(QThread):
                 self.error_signal.emit("Not connected to broker")
                 return []
             
+            # Sanitize topic name - remove any existing "topic://" prefixes
+            clean_topic_name = topic_name
+            while clean_topic_name.startswith("topic://"):
+                clean_topic_name = clean_topic_name[8:]  # Remove "topic://" prefix
+            
             # Check if this topic already has an active consumer with a MessageListener
-            topic_key = f"topic:{topic_name}"
+            topic_key = f"topic:{clean_topic_name}"
             if topic_key in self.topic_consumers:
                 # If we already have a listener, just return any cached messages
                 with self.message_cache_lock:
@@ -607,8 +625,8 @@ class JVMThread(QThread):
                             self.update_messages_signal.emit([])
                         return []
             
-            # Create topic and consumer
-            topic = self.session.createTopic(topic_name)
+            # Create topic and consumer using the cleaned name
+            topic = self.session.createTopic(clean_topic_name)
             consumer = self.session.createConsumer(topic)
             
             # Get messages (non-blocking with timeout)
@@ -617,7 +635,7 @@ class JVMThread(QThread):
             
             # If no messages available, log it and return empty list
             if message is None:
-                self.log_signal.emit(f"No messages available on topic {topic_name}")
+                self.log_signal.emit(f"No messages available on topic {clean_topic_name}")
                 consumer.close()
                 
                 # Only emit signal to update UI if requested
@@ -706,13 +724,13 @@ class JVMThread(QThread):
                         'id': message_id,
                         'body': body,
                         'properties': properties,
-                        'destination': str(topic_name),
+                        'destination': str(clean_topic_name),
                         'type': 'topic',
                         'message_type': message_type,
                         'timestamp': int(message.getJMSTimestamp())
                     })
                 except Exception as e:
-                    self.error_signal.emit(f"Error processing message from topic {topic_name}: {str(e)}::non-critical")
+                    self.error_signal.emit(f"Error processing message from topic {clean_topic_name}: {str(e)}::non-critical")
                     continue
                 
                 message = consumer.receive(100)  # Get next message with timeout
@@ -741,7 +759,11 @@ class JVMThread(QThread):
             if destination_type == 'queue':
                 destination = self.session.createQueue(destination_name)
             else:  # topic
-                destination = self.session.createTopic(destination_name)
+                # Sanitize topic name - remove any existing "topic://" prefixes
+                clean_topic_name = destination_name
+                while clean_topic_name.startswith("topic://"):
+                    clean_topic_name = clean_topic_name[8:]  # Remove "topic://" prefix
+                destination = self.session.createTopic(clean_topic_name)
             
             # Create producer and message
             producer = self.session.createProducer(destination)
@@ -778,8 +800,14 @@ class JVMThread(QThread):
             # Add to appropriate list
             if destination_type == 'queue' and destination_name not in self.monitored_queues:
                 self.monitored_queues.append(destination_name)
-            elif destination_type == 'topic' and destination_name not in self.monitored_topics:
-                self.monitored_topics.append(destination_name)
+            elif destination_type == 'topic':
+                # Sanitize topic name first
+                clean_topic_name = destination_name
+                while clean_topic_name.startswith("topic://"):
+                    clean_topic_name = clean_topic_name[8:]  # Remove "topic://" prefix
+                
+                if clean_topic_name not in self.monitored_topics:
+                    self.monitored_topics.append(clean_topic_name)
             
             # Start monitoring with current lists
             self.monitor_all(self.monitored_queues, self.monitored_topics)
@@ -797,9 +825,18 @@ class JVMThread(QThread):
             self.log_signal.emit("No destinations to monitor")
             return
         
-        # Store lists
+        # Store lists - sanitize topic names first
         self.monitored_queues = list(queues)
-        self.monitored_topics = list(topics)
+        
+        # Clean all topic names before storing them
+        cleaned_topics = []
+        for topic in topics:
+            clean_topic = topic
+            while clean_topic.startswith("topic://"):
+                clean_topic = clean_topic[8:]
+            cleaned_topics.append(clean_topic)
+        
+        self.monitored_topics = cleaned_topics
         
         # Initialize message cache
         with self.message_cache_lock:
@@ -891,7 +928,7 @@ class JVMThread(QThread):
                 self.error_signal.emit(f"Error in queue monitor: {str(e)}")
         
         # Create topic listeners one by one - do this before starting queue thread
-        for topic in topics:
+        for topic in self.monitored_topics:
             try:
                 # Use our create_topic_message_listener method
                 consumer, _ = self.create_topic_message_listener(topic)
@@ -1009,8 +1046,13 @@ class JVMThread(QThread):
                 self.error_signal.emit("Not connected to broker")
                 return None, None
             
+            # Sanitize topic name - remove any existing "topic://" prefixes
+            clean_topic_name = topic_name
+            while clean_topic_name.startswith("topic://"):
+                clean_topic_name = clean_topic_name[8:]  # Remove "topic://" prefix
+            
             # Create a consumer for this topic
-            topic_dest = self.session.createTopic(topic_name)
+            topic_dest = self.session.createTopic(clean_topic_name)
             consumer = self.session.createConsumer(topic_dest)
             
             # Create a message listener
@@ -1028,21 +1070,21 @@ class JVMThread(QThread):
             # Create and register the listener
             if self.using_jakarta:
                 MessageListener = jpype.JProxy("jakarta.jms.MessageListener", dict={
-                    "onMessage": SimpleTopicListener(self, topic_name).onMessage
+                    "onMessage": SimpleTopicListener(self, clean_topic_name).onMessage
                 })
             else:
                 MessageListener = jpype.JProxy("javax.jms.MessageListener", dict={
-                    "onMessage": SimpleTopicListener(self, topic_name).onMessage
+                    "onMessage": SimpleTopicListener(self, clean_topic_name).onMessage
                 })
             
             # Set the listener and store the consumer
             consumer.setMessageListener(MessageListener)
             
             # Store the consumer for cleanup
-            dest_key = f"topic:{topic_name}"
+            dest_key = f"topic:{clean_topic_name}"
             self.topic_consumers[dest_key] = consumer
             
-            self.log_signal.emit(f"Created active subscription for topic {topic_name}")
+            self.log_signal.emit(f"Created active subscription for topic {clean_topic_name}")
             return consumer, None
             
         except Exception as e:
@@ -1642,24 +1684,28 @@ class TabContent(QWidget):
         if destination_type == 'queue':
             self.jvm_thread.browse_queue(destination_name, force_new_browser=True)
         else:  # topic
-            # For topics, create a subscription to receive future messages
-            topic_key = f"topic:{destination_name}"
+            # For topics, sanitize name and create a subscription to receive future messages
+            clean_topic_name = destination_name
+            while clean_topic_name.startswith("topic://"):
+                clean_topic_name = clean_topic_name[8:]  # Remove "topic://" prefix
+                
+            topic_key = f"topic:{clean_topic_name}"
             
             # Check if we already have a listener for this topic
             if topic_key not in self.jvm_thread.topic_consumers:
                 # Create new listener if none exists
-                consumer, _ = self.jvm_thread.create_topic_message_listener(destination_name)
+                consumer, _ = self.jvm_thread.create_topic_message_listener(clean_topic_name)
                 if consumer:
-                    self.log_message(f"Subscribed to topic {destination_name} - messages will appear when published")
+                    self.log_message(f"Subscribed to topic {clean_topic_name} - messages will appear when published")
             else:
-                self.log_message(f"Already subscribed to topic {destination_name} - messages will appear when published")
+                self.log_message(f"Already subscribed to topic {clean_topic_name} - messages will appear when published")
                 
             # Check if we have any cached messages for this topic to display
             with self.jvm_thread.message_cache_lock:
                 if topic_key in self.jvm_thread.message_cache:
                     messages = self.jvm_thread.message_cache[topic_key]
                     if messages:
-                        self.log_message(f"Found {len(messages)} cached messages for topic {destination_name}")
+                        self.log_message(f"Found {len(messages)} cached messages for topic {clean_topic_name}")
                         self.jvm_thread.update_messages_signal.emit(messages)
     
     def start_monitoring(self):
