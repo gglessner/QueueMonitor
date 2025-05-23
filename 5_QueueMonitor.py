@@ -1113,7 +1113,7 @@ class Ui_TabContent:
         # Use system font for better Mac compatibility
         font = QFont()
         font.setFamily("Arial")  # More universally available font
-        font.setPointSize(48)    # Very large font size
+        font.setPointSize(14)    # Reduced size to match Parley
         font.setBold(True)
         font.setWeight(QFont.Bold)
         self.titleLabel.setFont(font)
@@ -1126,17 +1126,17 @@ class Ui_TabContent:
         
         # Status label - now on the right side
         self.statusLabel = QLabel("", self.headerFrame)
-        self.statusLabel.setStyleSheet("color: green; font-weight: bold; font-size: 18px;")
+        self.statusLabel.setStyleSheet("color: green; font-weight: bold; font-size: 14px;")
         self.headerLayout.addWidget(self.statusLabel)
 
         # Create input widgets directly in the header layout to eliminate spacing issues
         # Larger font for all labels and input fields
         labelFont = QFont()
         labelFont.setFamily("Arial")  # Better Mac compatibility
-        labelFont.setPointSize(18)
+        labelFont.setPointSize(14)  # Reduced from 18pt to 14pt
         inputFont = QFont()
         inputFont.setFamily("Arial")  # Better Mac compatibility
-        inputFont.setPointSize(18)
+        inputFont.setPointSize(14)  # Reduced from 18pt to 14pt
 
         # Method
         methodLabel = QLabel("Method:", self.headerFrame)
@@ -1324,7 +1324,7 @@ class Ui_TabContent:
         # Section 2: Status text box
         self.statusTextBox = QPlainTextEdit()
         self.statusTextBox.setReadOnly(True)
-        status_font = QFont("Courier New", 18)  # Increased font size to 18
+        status_font = QFont("Courier New", 16)  # Changed to 16pt to match Parley
         status_font.setFixedPitch(True)
         self.statusTextBox.setFont(status_font)
         self.mainSplitter.addWidget(self.statusTextBox)
@@ -1340,7 +1340,7 @@ class Ui_TabContent:
 
     def retranslateUi(self):
         """Set up UI text."""
-        self.titleLabel.setStyleSheet("font-size: 18pt; font-weight: bold;")
+        self.titleLabel.setStyleSheet("font-size: 14pt; font-weight: bold;")
         self.titleLabel.setText(f"Queue Monitor v{VERSION}")
 
 class TabContent(QWidget):
