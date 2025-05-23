@@ -357,106 +357,121 @@ class JVMThread(QThread):
             return False
     
     def get_destinations(self):
-        """Get all queues and topics from the broker"""
+        """Get all queues and topics from the broker using the DestinationSource from the ActiveMQConnection"""
         try:
             if not self.connection or not self.session:
                 self.error_signal.emit("Not connected to broker")
                 return [], []
             
-            # Skip JMX if it previously failed by checking a flag
-            if hasattr(self, 'jmx_failed') and self.jmx_failed:
-                # Don't log every time when using cached destinations
-                return self._get_default_destinations(log_cache_usage=False)
+            queues = []
+            topics = []
             
-            # Try JMX with random backoff to reduce connection attempts
-            if hasattr(self, 'last_jmx_attempt') and time.time() - self.last_jmx_attempt < 30 + random.uniform(0, 30):
-                # Skip JMX if we tried recently
-                return self._get_default_destinations(log_cache_usage=False)
-            
-            # Import required Java classes - handle both javax and jakarta packages
+            # Use ActiveMQConnection's getDestinationSource method like in MinimalOpenWire2.py
             try:
-                JMXServiceURL = jpype.JClass("javax.management.remote.JMXServiceURL")
-                JMXConnectorFactory = jpype.JClass("javax.management.remote.JMXConnectorFactory")
-                ObjectName = jpype.JClass("javax.management.ObjectName")
+                # Check if connection is ActiveMQConnection
+                if hasattr(self.connection, 'getDestinationSource'):
+                    # Get the destination source
+                    destination_source = self.connection.getDestinationSource()
+                    
+                    # Get queues
+                    all_queues = destination_source.getQueues()
+                    if all_queues:
+                        queue_iterator = all_queues.iterator()
+                        while queue_iterator.hasNext():
+                            queue = queue_iterator.next()
+                            if hasattr(queue, 'getQueueName'):
+                                queue_name = str(queue.getQueueName())
+                                if queue_name not in queues:
+                                    queues.append(queue_name)
+                                    self.log_signal.emit(f"Found queue: {queue_name}")
+                    
+                    # Get topics
+                    all_topics = destination_source.getTopics()
+                    if all_topics:
+                        topic_iterator = all_topics.iterator()
+                        while topic_iterator.hasNext():
+                            topic = topic_iterator.next()
+                            topic_name = str(topic)
+                            if topic_name not in topics and not topic_name.startswith("ActiveMQ.Advisory"):
+                                topics.append(topic_name)
+                                self.log_signal.emit(f"Found topic: {topic_name}")
+                    
+                    # Log the total found
+                    if queues or topics:
+                        self.log_signal.emit(f"Found {len(queues)} queues and {len(topics)} topics via DestinationSource")
             except Exception as e:
-                # Non-critical error - JMX is not essential
-                self.error_signal.emit(f"Error loading JMX classes: {str(e)}::non-critical")
-                self.log_signal.emit("JMX functionality might not be available")
-                self.jmx_failed = True
-                return self._get_default_destinations()
+                self.log_signal.emit(f"DestinationSource error: {str(e)}::non-critical")
             
-            # Connect to JMX
-            try:
-                self.last_jmx_attempt = time.time()
-                service_url = f"service:jmx:rmi:///jndi/rmi://{self.connection_params['host']}:1099/jmxrmi"
-                self.log_signal.emit(f"Connecting to JMX at {service_url}")
-                jmx_url = JMXServiceURL(service_url)
-                connector = JMXConnectorFactory.connect(jmx_url)
-                connection = connector.getMBeanServerConnection()
-                
-                # Get queues
-                queue_object_name = ObjectName("org.apache.activemq:type=Broker,brokerName=*,destinationType=Queue,destinationName=*")
-                queue_names = connection.queryNames(queue_object_name, None)
-                queues = []
-                
-                iterator = queue_names.iterator()
-                while iterator.hasNext():
-                    name = iterator.next().toString()
-                    queue_name = name.split("destinationName=")[1].split(",")[0]
-                    queues.append(queue_name)
-                
-                # Get topics
-                topic_object_name = ObjectName("org.apache.activemq:type=Broker,brokerName=*,destinationType=Topic,destinationName=*")
-                topic_names = connection.queryNames(topic_object_name, None)
-                topics = []
-                
-                iterator = topic_names.iterator()
-                while iterator.hasNext():
-                    name = iterator.next().toString()
-                    topic_name = name.split("destinationName=")[1].split(",")[0]
-                    topics.append(topic_name)
-                
-                connector.close()
-                
-                self.log_signal.emit(f"Found {len(queues)} queues and {len(topics)} topics via JMX")
-                self.jmx_failed = False  # Reset failure flag on success
-                
-                # Cache these destinations
+            # If no destinations found, try to use advisory topics as a fallback
+            if not queues and not topics:
+                try:
+                    # Create temp consumer for advisory topics
+                    advisory_topic = self.session.createTopic("ActiveMQ.Advisory.Queue")
+                    temp_consumer = self.session.createConsumer(advisory_topic)
+                    
+                    # Try to receive advisory messages with short timeout
+                    for _ in range(3):
+                        msg = temp_consumer.receive(100)
+                        if msg:
+                            try:
+                                if hasattr(msg, "getStringProperty"):
+                                    queue_name = msg.getStringProperty("destinationName")
+                                    if queue_name and queue_name not in queues:
+                                        queues.append(queue_name)
+                                        self.log_signal.emit(f"Discovered queue: {queue_name}")
+                            except:
+                                pass
+                    
+                    temp_consumer.close()
+                    
+                    # Do the same for topics
+                    advisory_topic = self.session.createTopic("ActiveMQ.Advisory.Topic")
+                    temp_consumer = self.session.createConsumer(advisory_topic)
+                    
+                    for _ in range(3):
+                        msg = temp_consumer.receive(100)
+                        if msg:
+                            try:
+                                if hasattr(msg, "getStringProperty"):
+                                    topic_name = msg.getStringProperty("destinationName")
+                                    if topic_name and topic_name not in topics and not topic_name.startswith("ActiveMQ.Advisory"):
+                                        topics.append(topic_name)
+                                        self.log_signal.emit(f"Discovered topic: {topic_name}")
+                            except:
+                                pass
+                    
+                    temp_consumer.close()
+                except Exception as e:
+                    self.log_signal.emit(f"Advisory discovery error: {str(e)}::non-critical")
+            
+            # If we found destinations, update cache
+            if queues or topics:
+                self.log_signal.emit(f"Total: {len(queues)} queues and {len(topics)} topics")
                 self._cached_queues = queues
                 self._cached_topics = topics
-                
-                self.update_queues_signal.emit(queues)
-                self.update_topics_signal.emit(topics)
-                return queues, topics
-            except Exception as e:
-                # This is a non-critical error - treat as info rather than error
-                self.log_signal.emit(f"JMX connection not available: {str(e)}")
-                self.log_signal.emit("Falling back to manual destination detection")
-                self.jmx_failed = True
-                return self._get_default_destinations()
+            else:
+                # Use cached destinations if available
+                if hasattr(self, '_cached_queues') and hasattr(self, '_cached_topics'):
+                    queues = self._cached_queues
+                    topics = self._cached_topics
+                    self.log_signal.emit("Using cached destination list")
+                else:
+                    # No destinations found and no cache - return empty lists
+                    self.log_signal.emit("No destinations found")
+                    # Store empty lists for next time
+                    self._cached_queues = []
+                    self._cached_topics = []
+            
+            self.update_queues_signal.emit(queues)
+            self.update_topics_signal.emit(topics)
+            return queues, topics
+            
         except Exception as e:
             self.error_signal.emit(f"Error getting destinations: {str(e)}")
-            return self._get_default_destinations()
-    
-    def _get_default_destinations(self, log_cache_usage=True):
-        """Return default or cached destinations when JMX is unavailable"""
-        # Use cached destinations if available
-        if hasattr(self, '_cached_queues') and hasattr(self, '_cached_topics'):
-            queues = self._cached_queues
-            topics = self._cached_topics
-            if log_cache_usage:
-                self.log_signal.emit("Using cached destination list (JMX disabled)")
-        else:
-            # Fall back to manually getting some common destinations
-            queues = ["TEST.QUEUE", "EXAMPLE.QUEUE", "DEFAULT.QUEUE"]
-            topics = ["TEST.TOPIC", "EXAMPLE.TOPIC", "DEFAULT.TOPIC"]
-            # Cache these destinations
-            self._cached_queues = queues
-            self._cached_topics = topics
-            
-        self.update_queues_signal.emit(queues)
-        self.update_topics_signal.emit(topics)
-        return queues, topics
+            # Return empty lists on error - no defaults
+            self.update_queues_signal.emit([])
+            self.update_topics_signal.emit([])
+            return [], []
     
     def browse_queue(self, queue_name, update_ui=True, auto_refresh=False, force_new_browser=False):
         """Browse messages in a queue"""
