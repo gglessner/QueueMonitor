@@ -28,13 +28,16 @@ import threading
 import jpype
 import jpype.imports
 from jpype.types import *
-import winreg
-import subprocess
 import socket
 import csv
+import subprocess
 from PySide6.QtWidgets import QApplication
 import random
 
+# Import winreg only on Windows
+if sys.platform == 'win32':
+    import winreg
+    
 # Define the version number
 VERSION = "1.0.1"
 
@@ -71,6 +74,55 @@ def find_java_home():
                         return java_home
         except WindowsError:
             pass
+    
+    # Additional checks for macOS
+    if sys.platform == 'darwin':
+        # Common macOS Java home locations
+        macos_java_locations = [
+            '/Library/Java/JavaVirtualMachines',
+            '/System/Library/Java/JavaVirtualMachines',
+            os.path.expanduser('~/Library/Java/JavaVirtualMachines')
+        ]
+        
+        for location in macos_java_locations:
+            if os.path.exists(location):
+                # Find the newest JDK directory
+                jdk_dirs = [d for d in os.listdir(location) if d.startswith('jdk') and os.path.isdir(os.path.join(location, d))]
+                if jdk_dirs:
+                    # Sort by version (assuming format like jdk-11.0.1.jdk)
+                    jdk_dirs.sort(reverse=True)
+                    java_home = os.path.join(location, jdk_dirs[0], 'Contents/Home')
+                    if os.path.exists(java_home):
+                        return java_home
+        
+        # Try with /usr/libexec/java_home command
+        try:
+            java_home = subprocess.check_output(['/usr/libexec/java_home'], universal_newlines=True).strip()
+            if os.path.exists(java_home):
+                return java_home
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+    
+    # Additional checks for Linux
+    if sys.platform.startswith('linux'):
+        # Common Linux Java home locations
+        linux_java_locations = [
+            '/usr/lib/jvm',
+            '/usr/java',
+            '/opt/java',
+            '/usr/local/java'
+        ]
+        
+        for location in linux_java_locations:
+            if os.path.exists(location):
+                # Try to find a JDK directory
+                for root, dirs, _ in os.walk(location):
+                    for dir_name in dirs:
+                        if 'jdk' in dir_name.lower() or 'java' in dir_name.lower():
+                            java_home = os.path.join(root, dir_name)
+                            # Check if it looks like a Java home
+                            if os.path.exists(os.path.join(java_home, 'bin', 'java')):
+                                return java_home
     
     # Try using 'where java' on Windows or 'which java' on Unix
     try:
@@ -992,113 +1044,155 @@ class Ui_TabContent:
         self.verticalLayout.setSpacing(5)
         self.verticalLayout.setContentsMargins(0, 0, 0, 0)
 
-        # Header frame with title
+        # Header frame with title and connection details - make as compact as possible
         self.headerFrame = QFrame(widget)
+        self.headerFrame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.headerLayout = QHBoxLayout(self.headerFrame)
-        self.headerLayout.setContentsMargins(0, 0, 0, 0)
+        self.headerLayout.setContentsMargins(5, 5, 5, 5)
+        self.headerLayout.setSpacing(5)
 
+        # Title on the left side only - use system font for better compatibility
         self.titleLabel = QLabel(self.headerFrame)
-        font = QFont("Courier New", 14)
+        # Use system font for better Mac compatibility
+        font = QFont()
+        font.setFamily("Arial")  # More universally available font
+        font.setPointSize(48)    # Very large font size
         font.setBold(True)
+        font.setWeight(QFont.Bold)
         self.titleLabel.setFont(font)
+        # Set explicit text here for debugging
+        self.titleLabel.setText(f"QueueMonitor v{VERSION}")
         self.headerLayout.addWidget(self.titleLabel)
 
+        # Add a spacer to push everything else to the right
         self.headerLayout.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
         
-        # Status label
+        # Status label - now on the right side
         self.statusLabel = QLabel("", self.headerFrame)
-        self.statusLabel.setStyleSheet("color: green; font-weight: bold;")
+        self.statusLabel.setStyleSheet("color: green; font-weight: bold; font-size: 18px;")
         self.headerLayout.addWidget(self.statusLabel)
 
-        # Connection settings frame
-        self.connectionFrame = QFrame(self.headerFrame)
-        self.connectionLayout = QGridLayout(self.connectionFrame)
-        self.connectionLayout.setContentsMargins(0, 0, 0, 0)
-        self.connectionLayout.setHorizontalSpacing(5)
-        self.connectionLayout.setVerticalSpacing(2)
+        # Create input widgets directly in the header layout to eliminate spacing issues
+        # Larger font for all labels and input fields
+        labelFont = QFont()
+        labelFont.setFamily("Arial")  # Better Mac compatibility
+        labelFont.setPointSize(18)
+        inputFont = QFont()
+        inputFont.setFamily("Arial")  # Better Mac compatibility
+        inputFont.setPointSize(18)
 
-        # Row 1: Connection details
-        self.methodLabel = QLabel("Method:", self.connectionFrame)
-        self.connectionLayout.addWidget(self.methodLabel, 0, 0)
+        # Method
+        methodLabel = QLabel("Method:", self.headerFrame)
+        methodLabel.setFont(labelFont)
+        self.headerLayout.addWidget(methodLabel)
         
-        self.methodCombo = QComboBox(self.connectionFrame)
+        self.methodCombo = QComboBox(self.headerFrame)
         self.methodCombo.addItems(["tcp", "ssl", "nio", "auto"])
-        self.connectionLayout.addWidget(self.methodCombo, 0, 1)
+        self.methodCombo.setFixedWidth(100)
+        self.methodCombo.setFont(inputFont)
+        self.headerLayout.addWidget(self.methodCombo)
 
-        self.hostLabel = QLabel("Host:", self.connectionFrame)
-        self.connectionLayout.addWidget(self.hostLabel, 0, 2)
+        # Host
+        hostLabel = QLabel("Host:", self.headerFrame)
+        hostLabel.setFont(labelFont)
+        self.headerLayout.addWidget(hostLabel)
         
-        self.hostLine = QLineEdit(self.connectionFrame)
+        self.hostLine = QLineEdit(self.headerFrame)
         self.hostLine.setText("localhost")
-        self.connectionLayout.addWidget(self.hostLine, 0, 3)
+        self.hostLine.setFixedWidth(150)
+        self.hostLine.setFont(inputFont)
+        self.headerLayout.addWidget(self.hostLine)
 
-        self.portLabel = QLabel("Port:", self.connectionFrame)
-        self.connectionLayout.addWidget(self.portLabel, 0, 4)
+        # Port
+        portLabel = QLabel("Port:", self.headerFrame)
+        portLabel.setFont(labelFont)
+        self.headerLayout.addWidget(portLabel)
         
-        self.portLine = QLineEdit(self.connectionFrame)
+        self.portLine = QLineEdit(self.headerFrame)
         self.portLine.setText("61616")
-        self.connectionLayout.addWidget(self.portLine, 0, 5)
+        self.portLine.setFixedWidth(100)
+        self.portLine.setFont(inputFont)
+        self.headerLayout.addWidget(self.portLine)
 
-        # Row 2: Authentication
-        self.usernameLabel = QLabel("Username:", self.connectionFrame)
-        self.connectionLayout.addWidget(self.usernameLabel, 1, 0)
+        # Username
+        userLabel = QLabel("User:", self.headerFrame)
+        userLabel.setFont(labelFont)
+        self.headerLayout.addWidget(userLabel)
         
-        self.usernameLine = QLineEdit(self.connectionFrame)
+        self.usernameLine = QLineEdit(self.headerFrame)
         self.usernameLine.setText("admin")
-        self.connectionLayout.addWidget(self.usernameLine, 1, 1)
+        self.usernameLine.setFixedWidth(100)
+        self.usernameLine.setFont(inputFont)
+        self.headerLayout.addWidget(self.usernameLine)
 
-        self.passwordLabel = QLabel("Password:", self.connectionFrame)
-        self.connectionLayout.addWidget(self.passwordLabel, 1, 2)
+        # Password
+        passLabel = QLabel("Pass:", self.headerFrame)
+        passLabel.setFont(labelFont)
+        self.headerLayout.addWidget(passLabel)
         
-        self.passwordLine = QLineEdit(self.connectionFrame)
+        self.passwordLine = QLineEdit(self.headerFrame)
         self.passwordLine.setText("admin")
         self.passwordLine.setEchoMode(QLineEdit.Password)
-        self.connectionLayout.addWidget(self.passwordLine, 1, 3)
+        self.passwordLine.setFixedWidth(100)
+        self.passwordLine.setFont(inputFont)
+        self.headerLayout.addWidget(self.passwordLine)
 
-        self.connectButton = QPushButton("Connect", self.connectionFrame)
-        self.connectionLayout.addWidget(self.connectButton, 1, 4, 1, 2)
+        # Connect button
+        self.connectButton = QPushButton("Connect", self.headerFrame)
+        self.connectButton.setFixedWidth(120)
+        self.connectButton.setFont(labelFont)
+        self.headerLayout.addWidget(self.connectButton)
 
-        self.headerLayout.addWidget(self.connectionFrame)
         self.verticalLayout.addWidget(self.headerFrame)
 
-        # Main content splitter
-        self.splitter = QSplitter(Qt.Horizontal)
+        # Main splitter to hold the three main sections
+        self.mainSplitter = QSplitter(Qt.Vertical)
+        
+        # Section 1: Content splitter (holds left panel and right panel)
+        self.contentSplitter = QSplitter(Qt.Horizontal)
         
         # Left panel: Queues and Topics
         self.leftPanel = QWidget()
         self.leftLayout = QVBoxLayout(self.leftPanel)
         self.leftLayout.setContentsMargins(5, 5, 5, 5)
 
-        # Queues list
+        # Queues list with larger font
         self.queuesLabel = QLabel("Queues:")
+        self.queuesLabel.setFont(labelFont)
         self.leftLayout.addWidget(self.queuesLabel)
         
         self.queuesList = QListWidget()
+        self.queuesList.setFont(inputFont)
         self.leftLayout.addWidget(self.queuesList)
 
-        # Topics list
+        # Topics list with larger font
         self.topicsLabel = QLabel("Topics:")
+        self.topicsLabel.setFont(labelFont)
         self.leftLayout.addWidget(self.topicsLabel)
         
         self.topicsList = QListWidget()
+        self.topicsList.setFont(inputFont)
         self.leftLayout.addWidget(self.topicsList)
 
-        # Refresh button
+        # Refresh button with larger font
         self.refreshButton = QPushButton("Refresh Destinations")
+        self.refreshButton.setFont(labelFont)
         self.leftLayout.addWidget(self.refreshButton)
 
-        self.splitter.addWidget(self.leftPanel)
+        self.contentSplitter.addWidget(self.leftPanel)
 
         # Right panel: Messages and actions
         self.rightPanel = QWidget()
         self.rightLayout = QVBoxLayout(self.rightPanel)
         self.rightLayout.setContentsMargins(5, 5, 5, 5)
 
-        # Messages list
+        # Messages list with larger font
         self.messagesLabel = QLabel("Messages:")
+        self.messagesLabel.setFont(labelFont)
         self.rightLayout.addWidget(self.messagesLabel)
         
         self.messagesTable = QTableWidget()
+        self.messagesTable.setFont(inputFont)
         self.messagesTable.setColumnCount(5)
         self.messagesTable.setHorizontalHeaderLabels(["ID", "Destination", "Type", "Timestamp", "Body"])
         self.messagesTable.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
@@ -1109,62 +1203,81 @@ class Ui_TabContent:
         self.actionsLayout = QHBoxLayout(self.actionsFrame)
         self.actionsLayout.setContentsMargins(0, 0, 0, 0)
 
+        # Action buttons with larger font
         self.monitorButton = QPushButton("Monitor")
+        self.monitorButton.setFont(labelFont)
         self.actionsLayout.addWidget(self.monitorButton)
         
         self.monitorAllButton = QPushButton("Monitor All")
+        self.monitorAllButton.setFont(labelFont)
         self.actionsLayout.addWidget(self.monitorAllButton)
         
         self.stopButton = QPushButton("Stop")
+        self.stopButton.setFont(labelFont)
         self.actionsLayout.addWidget(self.stopButton)
         
         self.sendButton = QPushButton("Send New")
+        self.sendButton.setFont(labelFont)
         self.actionsLayout.addWidget(self.sendButton)
         
         self.exportCsvButton = QPushButton("Export CSV")
+        self.exportCsvButton.setFont(labelFont)
         self.actionsLayout.addWidget(self.exportCsvButton)
 
         self.rightLayout.addWidget(self.actionsFrame)
 
-        # Message editor
+        # Message editor with larger font
         self.editorLabel = QLabel("Message Editor:")
+        self.editorLabel.setFont(labelFont)
         self.rightLayout.addWidget(self.editorLabel)
         
         self.messageEditor = QTextEdit()
+        self.messageEditor.setFont(inputFont)
         self.rightLayout.addWidget(self.messageEditor)
 
-        # Properties editor
+        # Properties editor with larger font
         self.propertiesFrame = QFrame()
         self.propertiesLayout = QHBoxLayout(self.propertiesFrame)
         self.propertiesLayout.setContentsMargins(0, 0, 0, 0)
         
         self.propertiesLabel = QLabel("Properties:")
+        self.propertiesLabel.setFont(labelFont)
         self.propertiesLayout.addWidget(self.propertiesLabel)
         
         self.propertiesLine = QLineEdit()
         self.propertiesLine.setPlaceholderText("property1=value1,property2=value2")
+        self.propertiesLine.setFont(inputFont)
         self.propertiesLayout.addWidget(self.propertiesLine)
 
         self.rightLayout.addWidget(self.propertiesFrame)
 
-        # Send edited message
+        # Send edited message button with larger font
         self.sendEditedButton = QPushButton("Send Edited Message")
+        self.sendEditedButton.setFont(labelFont)
         self.rightLayout.addWidget(self.sendEditedButton)
 
-        self.splitter.addWidget(self.rightPanel)
+        self.contentSplitter.addWidget(self.rightPanel)
         
-        # Set initial splitter sizes (30% left, 70% right)
-        self.splitter.setSizes([300, 700])
-        self.verticalLayout.addWidget(self.splitter)
+        # Set initial content splitter sizes (30% left, 70% right)
+        self.contentSplitter.setSizes([300, 700])
+        
+        # Add the content splitter to the main splitter
+        self.mainSplitter.addWidget(self.contentSplitter)
 
-        # Status text box
+        # Section 2: Status text box
         self.statusTextBox = QPlainTextEdit()
         self.statusTextBox.setReadOnly(True)
-        status_font = QFont("Courier New", 10)
+        status_font = QFont("Courier New", 18)  # Increased font size to 18
         status_font.setFixedPitch(True)
         self.statusTextBox.setFont(status_font)
-        self.statusTextBox.setMaximumHeight(100)
-        self.verticalLayout.addWidget(self.statusTextBox)
+        self.mainSplitter.addWidget(self.statusTextBox)
+        
+        # Add the main splitter to the layout
+        self.verticalLayout.addWidget(self.mainSplitter)
+        
+        # Set equal sizes for the sections in the main splitter (1:1 ratio)
+        # The content splitter (section 1) will get 2/3, status box (section 2) will get 1/3
+        self.mainSplitter.setSizes([2, 1])
 
         self.retranslateUi()
 
